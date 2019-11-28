@@ -41,6 +41,19 @@ fn next_element(slice: &[u8]) -> (&[u8], &[u8], &[u8]) {
     return (element_size, element, o2);
 }
 
+/// returns next top priority (key, value) from store
+fn next(kv_store: &KeyValueStore) -> (Vec<u8>, Vec<u8>) {
+    let (k, v) = kv_store.iter().next_back().unwrap();
+    (k.to_vec(), v.to_vec())
+}
+
+/// returns size of elements written in this byte array and rest of data as slice
+fn size(value: &Vec<u8>) -> (u32, &[u8], &[u8]) {
+    let (key_size, elements_slice) = value.split_at(KEY_SIZE_BYTES);
+    let size = as_u32_be(key_size.try_into().unwrap());
+    (size, key_size, elements_slice)
+}
+
 impl PriorityQueue<Vec<u8>> for PriorityQueueImpl {
 
     fn new() -> Self {
@@ -69,9 +82,8 @@ impl PriorityQueue<Vec<u8>> for PriorityQueueImpl {
         }
 
         let PriorityQueueImpl(kv_store) = self;
-        let (_, value) = kv_store.iter().next_back().unwrap();
-        let (key_size, mut elements_slice) = value.split_at(KEY_SIZE_BYTES);
-        let size = as_u32_be(key_size.try_into().unwrap());
+        let (_, value) = next(&kv_store);
+        let (size, _, mut elements_slice) = size(&value);
 
         // loop n steps and return the last element
         let mut n = size;
@@ -100,7 +112,7 @@ impl PriorityQueue<Vec<u8>> for PriorityQueueImpl {
     ///
     /// Elements with priority 10 would be represented as following:
     ///   [0,0,0,3,0,0,0,1,5,0,0,0,2,6,7,0,0,0,3,8,9,10]
-    /// ->| 3 ELM | u8; 1 |5| u8; 2 |6,7| u8; 3 |8,9,10]
+    /// ->[ 3 ELM ][u8; 1][5][u8; 2][6,7][u8; 3][8,9,10]
     ///
     fn insert(&mut self, element: Vec<u8>, priority: u64) {
         // panic if element over max size (~2GB)
@@ -114,20 +126,19 @@ impl PriorityQueue<Vec<u8>> for PriorityQueueImpl {
         // insert first element if store !contains key, or append to byte array
         let val =
             if !kv_store.contains_key(&key) {
-                let key_size = vec![0,0,0,1];
-                key_size.into_iter()
-                    .chain(element_size.into_iter())
-                    .chain(element.into_iter())
+                vec![0,0,0,1]
+                    .into_iter()
+                    .chain(element_size)
+                    .chain(element)
                     .collect()
             } else {
                 let old_value: Vec<u8> = kv_store.get(&key).unwrap().to_vec();
-                let (old_key_size, other) = old_value.split_at(KEY_SIZE_BYTES);
-                let size = as_u32_be(old_key_size.try_into().unwrap());
-                let key_size = (size + 1).to_be_bytes().to_vec();
-                key_size.into_iter()
-                    .chain(other.to_vec().into_iter())
-                    .chain(element_size.into_iter())
-                    .chain(element.into_iter())
+                let (size, _, elements_slice) = size(&old_value);
+                (size + 1).to_be_bytes().to_vec()
+                    .into_iter()
+                    .chain(elements_slice.to_vec())
+                    .chain(element_size)
+                    .chain(element)
                     .collect()
             };
         kv_store.insert(key, val);
@@ -139,17 +150,8 @@ impl PriorityQueue<Vec<u8>> for PriorityQueueImpl {
         }
 
         let PriorityQueueImpl(kv_store) = self;
-        let key: Vec<u8>;
-        let value: Vec<u8>;
-        {
-            // do not fight the borrow checker (immutable borrow short scope)
-            let (k, v) = kv_store.iter().next_back().unwrap();
-            key = k.to_vec();
-            value = v.to_vec();
-        }
-
-        let (key_size, mut elements_slice) = value.split_at(KEY_SIZE_BYTES);
-        let size = as_u32_be(key_size.try_into().unwrap());
+        let (key, value) = next(&kv_store);
+        let (size, _, mut elements_slice) = size(&value);
         let mut new_val = (size - 1).to_be_bytes().to_vec();
 
         // loop n steps and return the last element
@@ -164,13 +166,14 @@ impl PriorityQueue<Vec<u8>> for PriorityQueueImpl {
                 if size == 1 {
                     kv_store.remove(&key.to_vec());
                 } else {
+                    // TODO: collect here (not on every loop)
                     kv_store.insert(key, new_val);
                 }
                 return Some(element.to_vec());
             } else {
                 new_val = new_val.into_iter()
-                    .chain(element_size.to_vec().into_iter())
-                    .chain(element.to_vec().into_iter())
+                    .chain(element_size.to_vec())
+                    .chain(element.to_vec())
                     .collect();
             }
         }
